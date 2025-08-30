@@ -87,7 +87,11 @@ export default class Subtitles {
           if (tracks.length === 1) {
             this.selectCaptions(tracks[0].number)
           } else {
-            const wantedTrack = tracks.find(({ language }) => {
+            let wantedTrack
+            if (settings.value.subtitleLanguage === 'lat') {
+              wantedTrack = tracks.find(t => t.name?.toLowerCase().includes('lat'))
+            }
+             wantedTrack =  wantedTrack || tracks.find(({ language }) => {
               if (language == null) language = 'eng'
               return language === settings.value.subtitleLanguage
             })

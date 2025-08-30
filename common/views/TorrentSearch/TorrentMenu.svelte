@@ -80,6 +80,18 @@
     }
   }
 
+  function getProvider(results, providers) {
+    if (!providers || providers.length === 0) return results;
+    try {
+      const regex = new RegExp(providers, 'i');
+      return results.filter(result => result.parseObject?.release_group && regex.test(result.parseObject.release_group));
+    } catch (e) {
+      return results; // Invalid regex pattern
+    }
+  
+  }
+  
+
   const languages = [
     { value: 'jpn', label: 'Japanese' },
     { value: 'eng', label: 'English' },
@@ -198,7 +210,10 @@
 
   $: queryResults = sortResults($results?.torrents, $settings.torrentSort)
   $: lookup = queryResults?.results
-  $: best = getBest(lookup, $settings.audioLanguage)
+
+  $: filterByProvider = getProvider(lookup, $settings.provider)
+
+  $: best = getBest(filterByProvider, $settings.audioLanguage)
 
   $: lookupHidden = queryResults?.hiddenResults
   $: viewHidden = false

@@ -85,6 +85,7 @@
     <option value='chi'>Chinese</option>
     <option value='por'>Portuguese</option>
     <option value='spa'>Spanish</option>
+    <option value='lat'>Spanish MX</option>
     <option value='ger'>German</option>
     <option value='pol'>Polish</option>
     <option value='cze'>Czech</option>
