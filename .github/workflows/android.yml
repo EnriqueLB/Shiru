@@ -1,7 +1,7 @@
 name: Android Build
 
 on:
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:
   workflow_run:
     workflows: ["Electron Build and Release"]
     types:
@@ -41,23 +41,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Recreate signing key from base64
-        run: |
-          echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > ./android/app/my-release-key.jks
-          echo "Keystore file recreated successfully"
-          
-          # Verificar que el archivo se creó correctamente
-          if [ -f "./android/app/my-release-key.jks" ]; then
-            echo "Keystore file exists and is ready to use"
-            ls -la ./android/app/my-release-key.jks
-          else
-            echo "ERROR: Keystore file was not created"
-            exit 1
-          fi
-
-      - name: Install node-pre-gyp
-        run: pnpm install -g node-pre-gyp
-
       - name: Remove Cached Build
         run: rm -rf ./build && mkdir ./build
 
@@ -87,67 +70,123 @@ jobs:
       - name: Stop Gradle daemon
         run: cd android && ./gradlew --stop
 
-      # - name: Setup build tool version variable
-      #   shell: bash
-      #   run: |
-      #     BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
-      #     echo "BUILD_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
-      #     echo Last build tool version is: $BUILD_TOOL_VERSION
+      # Decodificar MY_GITHUB_TOKEN desde base64
+      - name: Decode GitHub Token
+        id: decode_token
+        run: |
+          if echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d > /dev/null 2>&1; then
+            DECODED_TOKEN=$(echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d)
+            echo "DECODED_TOKEN=$DECODED_TOKEN" >> $GITHUB_ENV
+            echo "✅ Token decodificado correctamente desde base64"
+          else
+            echo "DECODED_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}" >> $GITHUB_ENV
+            echo "ℹ️ Token no estaba en base64, usando directamente"
+          fi
 
       - name: Get Tag
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ env.DECODED_TOKEN }}
         run: | 
           GIT_CURR_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
           echo "GIT_CURR_TAG=$GIT_CURR_TAG" >> $GITHUB_ENV
-          echo Last Tag is: $GIT_CURR_TAG
+          echo "LAST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)" >> $GITHUB_ENV
+          echo "Last Tag is: $GIT_CURR_TAG"
 
-      - uses: Wandalen/wretry.action@master
-        name: Sign app APK
+      # Sign APK con acción confiable
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
         id: sign_app
         with:
-          attempt_limit: 3
-          action: NoCrypt/sign-android@v1.0.3
-          with: |
-            releaseDir: capacitor/android/app/build/outputs/apk/release
-            signingKey: ./android/app/my-release-key.jks  # apunta al archivo reconstruido
-            keyAlias: ${{ secrets.ALIAS }}
-            keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-            keyPassword: ${{ secrets.KEY_PASSWORD }}
-            appName: Shiru
-            appVersion: ${{ env.GIT_CURR_TAG }}
-            appPrefix: android
+          releaseDirectory: capacitor/android/app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY_BASE64 }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
 
-      - uses: jungwinter/split@v2
-        id: signed_files
-        with:
-          msg: ${{ fromJSON( steps.sign_app.outputs.outputs ).signedFiles }}
-          separator: ':'
+      - name: List signed files
+        run: |
+          echo "Signed APK files:"
+          find capacitor/android/app/build/outputs/apk/release -name "*.apk" -type f | while read file; do
+            echo " - $file ($(du -h "$file" | cut -f1))"
+          done
 
       - name: Generate latest-android.yml
         run: |
           echo "version: ${GIT_CURR_TAG#v}" > latest-android.yml
+          echo "files:" >> latest-android.yml
+          find capacitor/android/app/build/outputs/apk/release -name "*signed*.apk" -type f | while read file; do
+            filename=$(basename "$file")
+            size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
+            echo "  - url: $filename" >> latest-android.yml
+            echo "    sha512: $(shasum -a 512 "$file" | cut -d' ' -f1)" >> latest-android.yml
+            echo "    size: $size" >> latest-android.yml
+          done
 
-      - name: Decodificar token personalizado si está en base64
-        id: decode_token
-        run: |
-          # Si el token está en base64, lo decodificamos
-          if echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d > /dev/null 2>&1; then
-            DECODED_TOKEN=$(echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d)
-            echo "DECODED_TOKEN=$DECODED_TOKEN" >> $GITHUB_ENV
-            echo "Token decodificado correctamente"
-          else
-            echo "DECODED_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}" >> $GITHUB_ENV
-            echo "Token no estaba en base64, usando directamente"
-          fi
+      # SUBIR A ARTIFACTS (no necesita token especial)
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apks-${{ env.GIT_CURR_TAG }}
+          path: |
+            capacitor/android/app/build/outputs/apk/release/*signed*.apk
+            latest-android.yml
+          retention-days: 30
+          compression-level: 9
 
-      - name: Upload APK to release
+      # SUBIR A RELEASES usando el token decodificado
+      - name: Create or Update Release
+        uses: softprops/action-gh-release@v1
+        if: env.GIT_CURR_TAG != ''
+        env:
+          GITHUB_TOKEN: ${{ env.DECODED_TOKEN }}
+        with:
+          tag_name: ${{ env.GIT_CURR_TAG }}
+          name: Release ${{ env.GIT_CURR_TAG }}
+          body: |
+            Android Build - ${{ env.GIT_CURR_TAG }}
+            
+            Last commit: ${{ env.LAST_COMMIT_MESSAGE }}
+            
+            **Built files:**
+            - Signed APK files
+            - Update metadata
+            
+            Auto-generated from GitHub Actions
+          files: |
+            capacitor/android/app/build/outputs/apk/release/*signed*.apk
+            latest-android.yml
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      # OPCIÓN ALTERNATIVA con gh CLI usando el token decodificado
+      - name: Upload to Release (Alternative)
+        if: env.GIT_CURR_TAG != '' && failure()
         env:
           GITHUB_TOKEN: ${{ env.DECODED_TOKEN }}
         run: |
           git fetch --tags
-          gh release upload --clobber ${{ env.GIT_CURR_TAG }} ../${{ steps.signed_files.outputs._0 }}
-          gh release upload --clobber ${{ env.GIT_CURR_TAG }} ../${{ steps.signed_files.outputs._1 }}
-          gh release upload --clobber ${{ env.GIT_CURR_TAG }} ../${{ steps.signed_files.outputs._2 }}
-          gh release upload --clobber ${{ env.GIT_CURR_TAG }} ../${{ steps.signed_files.outputs._3 }}
-          gh release upload --clobber ${{ env.GIT_CURR_TAG }} latest-android.yml
+          
+          # Subir cada archivo APK firmado
+          for apk_file in capacitor/android/app/build/outputs/apk/release/*signed*.apk; do
+            if [ -f "$apk_file" ]; then
+              echo "Uploading $apk_file to release ${{ env.GIT_CURR_TAG }}"
+              gh release upload --clobber "${{ env.GIT_CURR_TAG }}" "$apk_file"
+            fi
+          done
+          
+          # Subir el archivo de metadata
+          if [ -f "latest-android.yml" ]; then
+            echo "Uploading latest-android.yml to release ${{ env.GIT_CURR_TAG }}"
+            gh release upload --clobber "${{ env.GIT_CURR_TAG }}" "latest-android.yml"
+          fi
+
+      # Paso opcional para notificar el éxito
+      - name: Notify Success
+        if: success()
+        run: |
+          echo "✅ Build completed successfully!"
+          echo "📱 APK files uploaded to:"
+          echo "   - Artifacts: android-apks-${{ env.GIT_CURR_TAG }}"
+          echo "   - Release: ${{ env.GIT_CURR_TAG }}"
+          echo "🔗 Release URL: https://github.com/${{ github.repository }}/releases/tag/${{ env.GIT_CURR_TAG }}"
