@@ -61,17 +61,14 @@ jobs:
       - name: Build Native + Web
         run: pnpm run build:app
 
-      - name: Sync 
+      - name: Sync Capacitor
         run: pnpm exec cap sync android
 
-      - name: Check if APK directory exists
+      - name: Check if APK directory exists (pre-build)
         run: |
-          echo "Checking APK directory structure:"
-          find . -name "*.apk" -type f | head -10
-          echo "Android build outputs:"
-          ls -la android/app/build/outputs/ || echo "No android directory found"
-          ls -la android/app/build/outputs/apk/ || echo "No apk directory found"
-          ls -la android/app/build/outputs/apk/release/ || echo "No release directory found"
+          echo "Checking Android structure before Gradle build:"
+          ls -la android/ || echo "No android folder"
+          ls -la android/app/ || echo "No app folder"
 
       - uses: actions/cache@v3
         with:
@@ -87,107 +84,114 @@ jobs:
 
       - name: Verify APK files after build
         run: |
-          echo "APK files after build:"
+          echo "APK files after Gradle build:"
           find . -name "*.apk" -type f
-          echo "Release APK files:"
-          ls -la android/app/build/outputs/apk/release/ || echo "No release APKs found"
+          echo "Release APK directory contents:"
+          ls -la android/app/build/outputs/apk/release/ || echo "⚠️ Release APK directory not found"
 
       - name: Stop Gradle daemon
         run: cd android && ./gradlew --stop
 
-      # Decodificar MY_GITHUB_TOKEN desde base64
+      # Decode MY_GITHUB_TOKEN from base64 if needed
       - name: Decode GitHub Token
         id: decode_token
         run: |
           if echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d > /dev/null 2>&1; then
             DECODED_TOKEN=$(echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d)
             echo "DECODED_TOKEN=$DECODED_TOKEN" >> $GITHUB_ENV
-            echo "✅ Token decodificado correctamente desde base64"
+            echo "✅ Token decoded from base64"
           else
             echo "DECODED_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}" >> $GITHUB_ENV
-            echo "ℹ️ Token no estaba en base64, usando directamente"
+            echo "ℹ️ Token used as-is (not base64)"
           fi
 
       - name: Get Tag
         env:
           GITHUB_TOKEN: ${{ env.DECODED_TOKEN }}
-        run: | 
+        run: |
           GIT_CURR_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
           echo "GIT_CURR_TAG=$GIT_CURR_TAG" >> $GITHUB_ENV
           echo "LAST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)" >> $GITHUB_ENV
           echo "Last Tag is: $GIT_CURR_TAG"
 
-      # SOLUCIÓN CORREGIDA: Sign APK manualmente con rutas correctas
+      # 🔒 CORREGIDO: Firmado manual seguro de APKs
       - name: Sign APK manually
-  id: sign_apk
-  run: |
-    APK_RELEASE_DIR="./android/app/build/outputs/apk/release"
-    
-    # Verificar que el directorio existe
-    if [ ! -d "$APK_RELEASE_DIR" ]; then
-      echo "❌ Error: $APK_RELEASE_DIR does not exist. Did the build succeed?"
-      ls -la ./android/app/build/outputs/apk/ || echo "No APK outputs found"
-      exit 1
-    fi
+        id: sign_apk
+        run: |
+          APK_RELEASE_DIR="./android/app/build/outputs/apk/release"
 
-    echo "📁 APK release directory exists. Contents:"
-    ls -la "$APK_RELEASE_DIR"
+          if [ ! -d "$APK_RELEASE_DIR" ]; then
+            echo "❌ ERROR: APK release directory not found!"
+            echo "Expected: $APK_RELEASE_DIR"
+            ls -la ./android/app/build/outputs/apk/ 2>/dev/null || echo "No APK outputs at all"
+            exit 1
+          fi
 
-    # Ir al directorio
-    cd "$APK_RELEASE_DIR"
+          echo "📁 Entering APK release directory..."
+          cd "$APK_RELEASE_DIR"
 
-    # Reconstruir keystore
-    echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > signing.jks
+          echo "📦 APKs found before signing:"
+          ls -la *.apk 2>/dev/null || echo "No APK files found"
 
-    BUILD_TOOLS_PATH="/usr/local/lib/android/sdk/build-tools/34.0.0"
-    echo "Using build-tools from: $BUILD_TOOLS_PATH"
+          # Rebuild keystore from base64 secret
+          echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > signing.jks
 
-    # Firmar APKs no firmados
-    found_unsigned=false
-    for apk in *-release-unsigned.apk; do
-      if [ -f "$apk" ]; then
-        found_unsigned=true
-        echo "Processing: $apk"
-        aligned_apk="${apk/-unsigned/-aligned}"
-        signed_apk="${apk/-unsigned/-signed}"
+          BUILD_TOOLS_PATH="/usr/local/lib/android/sdk/build-tools/34.0.0"
+          if [ ! -d "$BUILD_TOOLS_PATH" ]; then
+            echo "❌ Build-tools 34.0.0 not found at expected path"
+            ls -la /usr/local/lib/android/sdk/build-tools/
+            exit 1
+          fi
 
-        $BUILD_TOOLS_PATH/zipalign -v -p 4 "$apk" "$aligned_apk"
-        $BUILD_TOOLS_PATH/apksigner sign \
-          --ks signing.jks \
-          --ks-key-alias "${{ secrets.ALIAS }}" \
-          --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
-          --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-          --out "$signed_apk" \
-          "$aligned_apk"
-        echo "✅ Signed: $signed_apk"
-      fi
-    done
+          found_unsigned=false
 
-    # También intentar con app-release-unsigned.apk (universal)
-    if [ -f "app-release-unsigned.apk" ]; then
-      found_unsigned=true
-      aligned_apk="app-release-aligned.apk"
-      signed_apk="app-release-signed.apk"
-      $BUILD_TOOLS_PATH/zipalign -v -p 4 "app-release-unsigned.apk" "$aligned_apk"
-      $BUILD_TOOLS_PATH/apksigner sign \
-        --ks signing.jks \
-        --ks-key-alias "${{ secrets.ALIAS }}" \
-        --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
-        --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-        --out "$signed_apk" \
-        "$aligned_apk"
-      echo "✅ Signed universal APK: $signed_apk"
-    fi
+          # Sign flavor-specific unsigned APKs (e.g., app-arm64-v8a-release-unsigned.apk)
+          for apk in *-release-unsigned.apk; do
+            if [ -f "$apk" ]; then
+              found_unsigned=true
+              aligned_apk="${apk/-unsigned/-aligned}"
+              signed_apk="${apk/-unsigned/-signed}"
+              echo "➡️ Processing: $apk"
+              $BUILD_TOOLS_PATH/zipalign -v -p 4 "$apk" "$aligned_apk"
+              $BUILD_TOOLS_PATH/apksigner sign \
+                --ks signing.jks \
+                --ks-key-alias "${{ secrets.ALIAS }}" \
+                --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
+                --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+                --out "$signed_apk" \
+                "$aligned_apk"
+              echo "✅ Signed: $signed_apk"
+            fi
+          done
 
-    if [ "$found_unsigned" = false ]; then
-      echo "⚠️ No unsigned APKs found. Maybe Gradle already signed them?"
-      echo "Available APKs:"
-      ls -la *.apk
-    fi
+          # Sign universal APK if exists
+          if [ -f "app-release-unsigned.apk" ]; then
+            found_unsigned=true
+            aligned_apk="app-release-aligned.apk"
+            signed_apk="app-release-signed.apk"
+            echo "➡️ Processing universal APK: app-release-unsigned.apk"
+            $BUILD_TOOLS_PATH/zipalign -v -p 4 "app-release-unsigned.apk" "$aligned_apk"
+            $BUILD_TOOLS_PATH/apksigner sign \
+              --ks signing.jks \
+              --ks-key-alias "${{ secrets.ALIAS }}" \
+              --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
+              --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+              --out "$signed_apk" \
+              "$aligned_apk"
+            echo "✅ Signed universal APK: $signed_apk"
+          fi
 
-    rm -f signing.jks
-    echo "Signed APKs:"
-    ls -la *-signed.apk 2>/dev/null || echo "None found"
+          if [ "$found_unsigned" = false ]; then
+            echo "⚠️ No unsigned APKs found. Possible causes:"
+            echo "   - Gradle already signed the APK (check build.gradle for signingConfig)"
+            echo "   - Build did not produce release APKs"
+            echo "Available APKs:"
+            ls -la *.apk
+          fi
+
+          rm -f signing.jks
+          echo "✅ Final signed APKs:"
+          ls -la *-signed.apk 2>/dev/null || echo "No signed APKs generated"
 
       - name: List all APK files after signing
         run: |
@@ -202,14 +206,14 @@ jobs:
           echo "files:" >> latest-android.yml
           find android/app/build/outputs/apk/release -name "*signed.apk" -type f | while read file; do
             filename=$(basename "$file")
-            size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
+            # Cross-platform file size
+            size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file")
             sha512=$(shasum -a 512 "$file" | cut -d' ' -f1)
             echo "  - url: $filename" >> latest-android.yml
             echo "    sha512: $sha512" >> latest-android.yml
             echo "    size: $size" >> latest-android.yml
           done
 
-      # SUBIR A ARTIFACTS
       - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -220,7 +224,6 @@ jobs:
           retention-days: 30
           compression-level: 9
 
-      # SUBIR A RELEASES
       - name: Create or Update Release
         uses: softprops/action-gh-release@v1
         if: env.GIT_CURR_TAG != ''
