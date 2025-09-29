@@ -22,9 +22,12 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          # Especificar versión específica de build-tools
-          build-tools-version: "34.0.0"
+
+      - name: Install specific build-tools
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "build-tools;34.0.0"
+          echo "Build tools installed:"
+          ls -la $ANDROID_HOME/build-tools/
 
       - name: Setup PNPM
         uses: pnpm/action-setup@v4
