@@ -114,9 +114,22 @@ jobs:
         run: |
           echo "version: ${GIT_CURR_TAG#v}" > latest-android.yml
 
+      - name: Decodificar token personalizado si está en base64
+        id: decode_token
+        run: |
+          # Si el token está en base64, lo decodificamos
+          if echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d > /dev/null 2>&1; then
+            DECODED_TOKEN=$(echo "${{ secrets.MY_GITHUB_TOKEN }}" | base64 -d)
+            echo "DECODED_TOKEN=$DECODED_TOKEN" >> $GITHUB_ENV
+            echo "Token decodificado correctamente"
+          else
+            echo "DECODED_TOKEN=${{ secrets.MY_GITHUB_TOKEN }}" >> $GITHUB_ENV
+            echo "Token no estaba en base64, usando directamente"
+          fi
+
       - name: Upload APK to release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ env.DECODED_TOKEN }}
         run: |
           git fetch --tags
           gh release upload --clobber ${{ env.GIT_CURR_TAG }} ../${{ steps.signed_files.outputs._0 }}
