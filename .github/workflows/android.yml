@@ -20,6 +20,12 @@ jobs:
         with:
           fetch-tags: true
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Especificar versión específica de build-tools
+          build-tools-version: "34.0.0"
+
       - name: Setup PNPM
         uses: pnpm/action-setup@v4
         with:
@@ -54,6 +60,11 @@ jobs:
 
       - name: Sync 
         run: pnpm exec cap sync android
+
+      - name: Check available build-tools
+        run: |
+          echo "Available build-tools:"
+          ls -la /usr/local/lib/android/sdk/build-tools/
 
       - uses: actions/cache@v3
         with:
@@ -92,7 +103,7 @@ jobs:
           echo "LAST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)" >> $GITHUB_ENV
           echo "Last Tag is: $GIT_CURR_TAG"
 
-      # Sign APK con acción confiable
+      # Sign APK especificando la versión de build-tools
       - name: Sign APK
         uses: r0adkll/sign-android-release@v1
         id: sign_app
@@ -102,6 +113,7 @@ jobs:
           alias: ${{ secrets.ALIAS }}
           keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
+          buildToolsVersion: "34.0.0"  # Especificar versión disponible
 
       - name: List signed files
         run: |
@@ -122,7 +134,7 @@ jobs:
             echo "    size: $size" >> latest-android.yml
           done
 
-      # SUBIR A ARTIFACTS (no necesita token especial)
+      # SUBIR A ARTIFACTS
       - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -133,7 +145,7 @@ jobs:
           retention-days: 30
           compression-level: 9
 
-      # SUBIR A RELEASES usando el token decodificado
+      # SUBIR A RELEASES
       - name: Create or Update Release
         uses: softprops/action-gh-release@v1
         if: env.GIT_CURR_TAG != ''
@@ -159,29 +171,6 @@ jobs:
           prerelease: false
           generate_release_notes: true
 
-      # OPCIÓN ALTERNATIVA con gh CLI usando el token decodificado
-      - name: Upload to Release (Alternative)
-        if: env.GIT_CURR_TAG != '' && failure()
-        env:
-          GITHUB_TOKEN: ${{ env.DECODED_TOKEN }}
-        run: |
-          git fetch --tags
-          
-          # Subir cada archivo APK firmado
-          for apk_file in capacitor/android/app/build/outputs/apk/release/*signed*.apk; do
-            if [ -f "$apk_file" ]; then
-              echo "Uploading $apk_file to release ${{ env.GIT_CURR_TAG }}"
-              gh release upload --clobber "${{ env.GIT_CURR_TAG }}" "$apk_file"
-            fi
-          done
-          
-          # Subir el archivo de metadata
-          if [ -f "latest-android.yml" ]; then
-            echo "Uploading latest-android.yml to release ${{ env.GIT_CURR_TAG }}"
-            gh release upload --clobber "${{ env.GIT_CURR_TAG }}" "latest-android.yml"
-          fi
-
-      # Paso opcional para notificar el éxito
       - name: Notify Success
         if: success()
         run: |
