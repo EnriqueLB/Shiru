@@ -119,78 +119,75 @@ jobs:
 
       # SOLUCIÓN CORREGIDA: Sign APK manualmente con rutas correctas
       - name: Sign APK manually
-        id: sign_apk
-        run: |
-          # Estamos en ./capacitor, así que la ruta es correcta
-          cd android/app/build/outputs/apk/release
-          
-          echo "Current directory: $(pwd)"
-          echo "APK files found:"
-          ls -la *.apk || echo "No APK files found"
-          
-          # Reconstruir el keystore desde base64
-          echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > signing.jks
-          
-          # Usar build-tools 34.0.0 específicamente
-          BUILD_TOOLS_PATH="/usr/local/lib/android/sdk/build-tools/34.0.0"
-          echo "Using build-tools from: $BUILD_TOOLS_PATH"
-          
-          # Firmar cada APK no firmado
-          for apk in *-release-unsigned.apk; do
-            if [ -f "$apk" ]; then
-              echo "Processing: $apk"
-              
-              # Zipalign
-              aligned_apk="${apk/-unsigned/-aligned}"
-              echo "Zipaligning to: $aligned_apk"
-              $BUILD_TOOLS_PATH/zipalign -v -p 4 "$apk" "$aligned_apk"
-              
-              # Sign APK
-              signed_apk="${apk/-unsigned/-signed}"
-              echo "Signing to: $signed_apk"
-              $BUILD_TOOLS_PATH/apksigner sign \
-                --ks signing.jks \
-                --ks-key-alias "${{ secrets.ALIAS }}" \
-                --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
-                --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-                --out "$signed_apk" \
-                "$aligned_apk"
-                
-              echo "✅ Successfully signed: $signed_apk"
-            fi
-          done
-          
-          # También firmar APK universal si existe
-          for apk in app-release-unsigned.apk; do
-            if [ -f "$apk" ]; then
-              echo "Processing universal APK: $apk"
-              
-              # Zipalign
-              aligned_apk="app-release-aligned.apk"
-              echo "Zipaligning to: $aligned_apk"
-              $BUILD_TOOLS_PATH/zipalign -v -p 4 "$apk" "$aligned_apk"
-              
-              # Sign APK
-              signed_apk="app-release-signed.apk"
-              echo "Signing to: $signed_apk"
-              $BUILD_TOOLS_PATH/apksigner sign \
-                --ks signing.jks \
-                --ks-key-alias "${{ secrets.ALIAS }}" \
-                --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
-                --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
-                --out "$signed_apk" \
-                "$aligned_apk"
-                
-              echo "✅ Successfully signed: $signed_apk"
-            fi
-          done
-          
-          # Limpiar archivo temporal del keystore
-          rm -f signing.jks
-          
-          # Listar archivos firmados
-          echo "Signed APK files created:"
-          ls -la *-signed.apk || echo "No signed APKs found"
+  id: sign_apk
+  run: |
+    APK_RELEASE_DIR="./android/app/build/outputs/apk/release"
+    
+    # Verificar que el directorio existe
+    if [ ! -d "$APK_RELEASE_DIR" ]; then
+      echo "❌ Error: $APK_RELEASE_DIR does not exist. Did the build succeed?"
+      ls -la ./android/app/build/outputs/apk/ || echo "No APK outputs found"
+      exit 1
+    fi
+
+    echo "📁 APK release directory exists. Contents:"
+    ls -la "$APK_RELEASE_DIR"
+
+    # Ir al directorio
+    cd "$APK_RELEASE_DIR"
+
+    # Reconstruir keystore
+    echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > signing.jks
+
+    BUILD_TOOLS_PATH="/usr/local/lib/android/sdk/build-tools/34.0.0"
+    echo "Using build-tools from: $BUILD_TOOLS_PATH"
+
+    # Firmar APKs no firmados
+    found_unsigned=false
+    for apk in *-release-unsigned.apk; do
+      if [ -f "$apk" ]; then
+        found_unsigned=true
+        echo "Processing: $apk"
+        aligned_apk="${apk/-unsigned/-aligned}"
+        signed_apk="${apk/-unsigned/-signed}"
+
+        $BUILD_TOOLS_PATH/zipalign -v -p 4 "$apk" "$aligned_apk"
+        $BUILD_TOOLS_PATH/apksigner sign \
+          --ks signing.jks \
+          --ks-key-alias "${{ secrets.ALIAS }}" \
+          --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
+          --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+          --out "$signed_apk" \
+          "$aligned_apk"
+        echo "✅ Signed: $signed_apk"
+      fi
+    done
+
+    # También intentar con app-release-unsigned.apk (universal)
+    if [ -f "app-release-unsigned.apk" ]; then
+      found_unsigned=true
+      aligned_apk="app-release-aligned.apk"
+      signed_apk="app-release-signed.apk"
+      $BUILD_TOOLS_PATH/zipalign -v -p 4 "app-release-unsigned.apk" "$aligned_apk"
+      $BUILD_TOOLS_PATH/apksigner sign \
+        --ks signing.jks \
+        --ks-key-alias "${{ secrets.ALIAS }}" \
+        --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
+        --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+        --out "$signed_apk" \
+        "$aligned_apk"
+      echo "✅ Signed universal APK: $signed_apk"
+    fi
+
+    if [ "$found_unsigned" = false ]; then
+      echo "⚠️ No unsigned APKs found. Maybe Gradle already signed them?"
+      echo "Available APKs:"
+      ls -la *.apk
+    fi
+
+    rm -f signing.jks
+    echo "Signed APKs:"
+    ls -la *-signed.apk 2>/dev/null || echo "None found"
 
       - name: List all APK files after signing
         run: |
