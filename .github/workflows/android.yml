@@ -41,6 +41,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Recreate signing key from base64
+        run: |
+          echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > ./android/app/my-release-key.jks
+          echo "Keystore file recreated successfully"
+          
+          # Verificar que el archivo se creó correctamente
+          if [ -f "./android/app/my-release-key.jks" ]; then
+            echo "Keystore file exists and is ready to use"
+            ls -la ./android/app/my-release-key.jks
+          else
+            echo "ERROR: Keystore file was not created"
+            exit 1
+          fi
+
       - name: Install node-pre-gyp
         run: pnpm install -g node-pre-gyp
 
@@ -96,7 +110,7 @@ jobs:
           action: NoCrypt/sign-android@v1.0.3
           with: |
             releaseDir: capacitor/android/app/build/outputs/apk/release
-            signingKey: ${{ secrets.SIGNING_KEY }}
+            signingKey: ./android/app/my-release-key.jks  # apunta al archivo reconstruido
             keyAlias: ${{ secrets.ALIAS }}
             keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
             keyPassword: ${{ secrets.KEY_PASSWORD }}
