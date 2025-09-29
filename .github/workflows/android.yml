@@ -68,6 +68,8 @@ jobs:
         run: |
           echo "Available build-tools:"
           ls -la /usr/local/lib/android/sdk/build-tools/
+          echo "Latest build-tools version:"
+          ls -d /usr/local/lib/android/sdk/build-tools/*/ | sort -V | tail -n1
 
       - uses: actions/cache@v3
         with:
@@ -106,21 +108,54 @@ jobs:
           echo "LAST_COMMIT_MESSAGE=$(git log -1 --pretty=%B)" >> $GITHUB_ENV
           echo "Last Tag is: $GIT_CURR_TAG"
 
-      # Sign APK especificando la versión de build-tools
-      - name: Sign APK
-        uses: r0adkll/sign-android-release@v1
-        id: sign_app
-        with:
-          releaseDirectory: capacitor/android/app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY_BASE64 }}
-          alias: ${{ secrets.ALIAS }}
-          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
-          buildToolsVersion: "34.0.0"  # Especificar versión disponible
-
-      - name: List signed files
+      # SOLUCIÓN: Sign APK manualmente con build-tools 34.0.0
+      - name: Sign APK manually
+        id: sign_apk
         run: |
-          echo "Signed APK files:"
+          cd capacitor/android/app/build/outputs/apk/release
+          
+          # Reconstruir el keystore desde base64
+          echo "${{ secrets.SIGNING_KEY_BASE64 }}" | base64 -d > signing.jks
+          
+          # Usar build-tools 34.0.0 específicamente
+          BUILD_TOOLS_PATH="/usr/local/lib/android/sdk/build-tools/34.0.0"
+          echo "Using build-tools from: $BUILD_TOOLS_PATH"
+          
+          # Firmar cada APK no firmado
+          for apk in *-unsigned.apk; do
+            if [ -f "$apk" ]; then
+              echo "Processing: $apk"
+              
+              # Zipalign
+              aligned_apk="${apk/-unsigned/-aligned}"
+              echo "Zipaligning to: $aligned_apk"
+              $BUILD_TOOLS_PATH/zipalign -v -p 4 "$apk" "$aligned_apk"
+              
+              # Sign APK
+              signed_apk="${aligned_apk/-aligned/-signed}"
+              echo "Signing to: $signed_apk"
+              $BUILD_TOOLS_PATH/apksigner sign \
+                --ks signing.jks \
+                --ks-key-alias "${{ secrets.ALIAS }}" \
+                --ks-pass "pass:${{ secrets.KEY_STORE_PASSWORD }}" \
+                --key-pass "pass:${{ secrets.KEY_PASSWORD }}" \
+                --out "$signed_apk" \
+                "$aligned_apk"
+                
+              echo "✅ Successfully signed: $signed_apk"
+            fi
+          done
+          
+          # Limpiar archivo temporal del keystore
+          rm -f signing.jks
+          
+          # Listar archivos firmados
+          echo "Signed APK files created:"
+          ls -la *-signed.apk
+
+      - name: List all APK files
+        run: |
+          echo "All APK files in release directory:"
           find capacitor/android/app/build/outputs/apk/release -name "*.apk" -type f | while read file; do
             echo " - $file ($(du -h "$file" | cut -f1))"
           done
@@ -129,12 +164,14 @@ jobs:
         run: |
           echo "version: ${GIT_CURR_TAG#v}" > latest-android.yml
           echo "files:" >> latest-android.yml
-          find capacitor/android/app/build/outputs/apk/release -name "*signed*.apk" -type f | while read file; do
+          find capacitor/android/app/build/outputs/apk/release -name "*signed.apk" -type f | while read file; do
             filename=$(basename "$file")
             size=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
+            sha512=$(shasum -a 512 "$file" | cut -d' ' -f1)
             echo "  - url: $filename" >> latest-android.yml
-            echo "    sha512: $(shasum -a 512 "$file" | cut -d' ' -f1)" >> latest-android.yml
+            echo "    sha512: $sha512" >> latest-android.yml
             echo "    size: $size" >> latest-android.yml
+            echo "    - $filename (SHA512: $sha512, Size: $size bytes)"
           done
 
       # SUBIR A ARTIFACTS
@@ -143,7 +180,7 @@ jobs:
         with:
           name: android-apks-${{ env.GIT_CURR_TAG }}
           path: |
-            capacitor/android/app/build/outputs/apk/release/*signed*.apk
+            capacitor/android/app/build/outputs/apk/release/*signed.apk
             latest-android.yml
           retention-days: 30
           compression-level: 9
@@ -168,7 +205,7 @@ jobs:
             
             Auto-generated from GitHub Actions
           files: |
-            capacitor/android/app/build/outputs/apk/release/*signed*.apk
+            capacitor/android/app/build/outputs/apk/release/*signed.apk
             latest-android.yml
           draft: false
           prerelease: false
